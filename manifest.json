@@ -3,13 +3,11 @@
   "name": "Chrome Snip Clipboard",
   "version": "1.0.0",
   "description": "截取当前页面可视区域，并将截图复制到系统剪贴板。",
-  "minimum_chrome_version": "116",
   "permissions": [
     "activeTab",
     "clipboardWrite",
     "contextMenus",
     "notifications",
-    "sidePanel",
     "scripting"
   ],
   "icons": {
@@ -21,11 +19,8 @@
   "background": {
     "service_worker": "background.js"
   },
-  "side_panel": {
-    "default_path": "sidepanel.html"
-  },
   "action": {
-    "default_title": "打开选区侧边栏",
+    "default_title": "截取当前可视区域并复制到剪贴板",
     "default_icon": {
       "16": "icons/icon-16.png",
       "32": "icons/icon-32.png",

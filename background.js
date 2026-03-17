@@ -1,10 +1,10 @@
 const PAGE_CAPTURE_MENU_ID = "capture-visible-area";
 const ACTION_SELECTION_MENU_ID = "launch-selection-mode";
-const SIDE_PANEL_PATH = "sidepanel.html";
 const SUCCESS_BADGE_DURATION_MS = 3000;
+const DOUBLE_CLICK_DELAY_MS = 280;
 
 let clearBadgeTimer = null;
-const selectionSessions = new Map();
+let pendingActionClick = null;
 
 chrome.runtime.onInstalled.addListener(() => {
   void setupExtensionUi();
@@ -15,7 +15,7 @@ chrome.runtime.onStartup.addListener(() => {
 });
 
 chrome.action.onClicked.addListener((tab) => {
-  void openSelectionSidePanel(tab);
+  handleActionClick(tab);
 });
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
@@ -25,25 +25,8 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   }
 
   if (info.menuItemId === ACTION_SELECTION_MENU_ID) {
-    void openSelectionSidePanel(tab);
+    void launchSelectionMode(tab);
   }
-});
-
-chrome.tabs.onActivated.addListener(() => {
-  void broadcastStateForActiveTab();
-});
-
-chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if (changeInfo.status === "loading") {
-    selectionSessions.delete(tabId);
-  }
-
-  void broadcastStateForActiveTab();
-});
-
-chrome.tabs.onRemoved.addListener((tabId) => {
-  selectionSessions.delete(tabId);
-  void broadcastStateForActiveTab();
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -52,34 +35,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (message?.type === "selection-state-changed") {
-    handleSelectionStateChanged(sender.tab, message.state);
-    return undefined;
-  }
-
-  if (message?.type === "selection-session-closed") {
-    handleSelectionSessionClosed(sender.tab);
-    return undefined;
+  if (message?.type === "copy-image-to-clipboard") {
+    void handleCopyImageToClipboard(sender, message, sendResponse);
+    return true;
   }
 
   if (message?.type === "selection-copy-success") {
-    void handleSelectionCopySuccess(sender.tab);
+    void handleSelectionCopySuccess();
     return undefined;
   }
 
   if (message?.type === "selection-copy-failure") {
-    void handleSelectionCopyFailure(sender.tab, message.error);
+    void handleSelectionCopyFailure(message.error);
     return undefined;
-  }
-
-  if (message?.type === "sidepanel-request-state") {
-    void handleSidePanelStateRequest(sendResponse);
-    return true;
-  }
-
-  if (message?.type === "sidepanel-command") {
-    void handleSidePanelCommand(message, sendResponse);
-    return true;
   }
 
   return undefined;
@@ -87,7 +55,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 async function setupExtensionUi() {
   try {
-    await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false });
     await removeAllContextMenus();
     await createContextMenu({
       id: PAGE_CAPTURE_MENU_ID,
@@ -96,12 +63,50 @@ async function setupExtensionUi() {
     });
     await createContextMenu({
       id: ACTION_SELECTION_MENU_ID,
-      title: "打开选区侧边栏",
+      title: "进入选区模式",
       contexts: ["action"]
     });
   } catch (error) {
     console.error("Failed to initialize extension UI:", error);
   }
+}
+
+function handleActionClick(tab) {
+  if (!tab?.id) {
+    void captureAndCopy(tab);
+    return;
+  }
+
+  const isRepeatedClick = pendingActionClick
+    && pendingActionClick.tabId === tab.id
+    && pendingActionClick.windowId === tab.windowId;
+
+  if (isRepeatedClick) {
+    clearTimeout(pendingActionClick.timerId);
+    pendingActionClick = null;
+    void launchSelectionMode(tab);
+    return;
+  }
+
+  if (pendingActionClick) {
+    clearTimeout(pendingActionClick.timerId);
+    const previousTab = pendingActionClick.tab;
+    pendingActionClick = null;
+    void captureAndCopy(previousTab);
+  }
+
+  const timerId = setTimeout(() => {
+    const scheduledTab = pendingActionClick?.tab;
+    pendingActionClick = null;
+    void captureAndCopy(scheduledTab || tab);
+  }, DOUBLE_CLICK_DELAY_MS);
+
+  pendingActionClick = {
+    tabId: tab.id,
+    windowId: tab.windowId,
+    tab,
+    timerId
+  };
 }
 
 async function captureAndCopy(invokedTab) {
@@ -145,206 +150,51 @@ async function captureAndCopy(invokedTab) {
   }
 }
 
-async function openSelectionSidePanel(invokedTab) {
-  const tab = invokedTab?.id ? invokedTab : await getCurrentTab();
-  if (!tab?.id) {
-    return;
-  }
-
-  await chrome.sidePanel.setOptions({
-    tabId: tab.id,
-    path: SIDE_PANEL_PATH,
-    enabled: true
-  });
-
-  if (isInjectablePageUrl(tab.url)) {
-    await launchSelectionMode(tab);
-  } else {
-    selectionSessions.set(tab.id, buildSelectionState(tab.id, tab.url, {
-      supported: false,
-      statusMessage: "当前页面不支持选区模式。请切换到普通网页后重试。"
-    }));
-  }
-
-  await chrome.sidePanel.open({ tabId: tab.id });
-  await broadcastStateForActiveTab();
-}
-
 async function launchSelectionMode(tab) {
-  const previewDataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
-    format: "png"
-  });
-
-  selectionSessions.set(tab.id, buildSelectionState(tab.id, tab.url, {
-    isOpen: true,
-    statusMessage: "拖动鼠标开始选择区域"
-  }));
-
-  await chrome.scripting.executeScript({
-    target: { tabId: tab.id },
-    func: setSelectionBootstrapData,
-    args: [{ previewDataUrl }]
-  });
-
-  await chrome.scripting.executeScript({
-    target: { tabId: tab.id },
-    files: ["selection-ui.js"]
-  });
-
-  await setActionState({
-    badgeText: "",
-    badgeColor: "#4b5563",
-    title: "选区模式已启动"
-  });
-}
-
-async function handleSidePanelCommand(message, sendResponse) {
   try {
-    const tab = await getCurrentTab();
-    if (!tab?.id) {
+    const targetTab = tab?.id ? tab : await getCurrentTab();
+    if (!targetTab?.id) {
       throw new Error("未找到当前活动标签页。");
     }
 
-    if (message.command === "start-selection") {
-      await openSelectionSidePanel(tab);
-      sendResponse({
-        ok: true,
-        state: getSelectionStateForTab(tab.id, tab.url)
-      });
-      return;
+    if (!isInjectablePageUrl(targetTab.url)) {
+      throw new Error("当前页面不支持选区模式。请切换到普通网页后重试。");
     }
 
-    if (!isInjectablePageUrl(tab.url)) {
-      throw new Error("当前页面不支持选区模式。");
+    const previewDataUrl = await chrome.tabs.captureVisibleTab(targetTab.windowId, {
+      format: "png"
+    });
+
+    await chrome.scripting.executeScript({
+      target: { tabId: targetTab.id },
+      func: setSelectionBootstrapData,
+      args: [{ previewDataUrl }]
+    });
+
+    await chrome.scripting.executeScript({
+      target: { tabId: targetTab.id },
+      files: ["selection-ui.js"]
+    });
+
+    await setActionState({
+      badgeText: "",
+      badgeColor: "#4b5563",
+      title: "选区模式已启动"
+    });
+  } catch (error) {
+    console.error("Failed to launch selection mode:", error);
+
+    await setActionState({
+      badgeText: "",
+      badgeColor: "#b91c1c",
+      title: `选区模式启动失败：${getErrorMessage(error)}`
+    });
+
+    try {
+      await notifyCaptureFailure(getErrorMessage(error));
+    } catch (notificationError) {
+      console.error("Failed to show selection launch notification:", notificationError);
     }
-
-    await relaySelectionCommand(tab.id, {
-      type: "selection-ui-command",
-      command: message.command,
-      mode: message.mode,
-      enabled: message.enabled
-    });
-
-    sendResponse({
-      ok: true,
-      state: getSelectionStateForTab(tab.id, tab.url)
-    });
-  } catch (error) {
-    sendResponse({
-      ok: false,
-      error: getErrorMessage(error)
-    });
-  }
-}
-
-async function handleSidePanelStateRequest(sendResponse) {
-  try {
-    const tab = await getCurrentTab();
-    sendResponse({
-      ok: true,
-      state: tab?.id ? getSelectionStateForTab(tab.id, tab.url) : buildSelectionState(null, "")
-    });
-  } catch (error) {
-    sendResponse({
-      ok: false,
-      error: getErrorMessage(error)
-    });
-  }
-}
-
-function handleSelectionStateChanged(tab, state) {
-  if (!tab?.id) {
-    return;
-  }
-
-  selectionSessions.set(tab.id, buildSelectionState(tab.id, tab.url, state));
-  void broadcastStateForActiveTab();
-}
-
-function handleSelectionSessionClosed(tab) {
-  if (!tab?.id) {
-    return;
-  }
-
-  selectionSessions.set(tab.id, buildSelectionState(tab.id, tab.url, {
-    isOpen: false,
-    statusMessage: "选区模式已关闭"
-  }));
-  void broadcastStateForActiveTab();
-}
-
-async function handleSelectionCopySuccess(tab) {
-  await setSuccessActionState({
-    badgeText: "OK",
-    badgeColor: "#15803d",
-    title: "选区截图已复制到剪贴板"
-  });
-
-  if (tab?.id) {
-    selectionSessions.set(tab.id, buildSelectionState(tab.id, tab.url, {
-      isOpen: false,
-      statusMessage: "已复制到剪贴板"
-    }));
-  }
-
-  await broadcastStateForActiveTab();
-}
-
-async function handleSelectionCopyFailure(tab, errorMessage) {
-  const message = errorMessage || "选区截图失败。";
-
-  await setActionState({
-    badgeText: "",
-    badgeColor: "#b91c1c",
-    title: `截图失败：${message}`
-  });
-
-  if (tab?.id) {
-    selectionSessions.set(tab.id, buildSelectionState(tab.id, tab.url, {
-      isOpen: true,
-      statusMessage: message
-    }));
-  }
-
-  try {
-    await notifyCaptureFailure(message);
-  } catch (notificationError) {
-    console.error("Failed to show selection failure notification:", notificationError);
-  }
-
-  await broadcastStateForActiveTab();
-}
-
-async function relaySelectionCommand(tabId, payload) {
-  try {
-    await chrome.tabs.sendMessage(tabId, payload);
-  } catch (error) {
-    if (String(error).includes("Receiving end does not exist")) {
-      throw new Error("选区模式未启动，请先点击“开始选区”。");
-    }
-
-    throw error;
-  }
-}
-
-async function copyImageToClipboardInTab(tab, imageDataUrl) {
-  if (!tab.id) {
-    throw new Error("未找到可注入脚本的标签页。");
-  }
-
-  if (!isWritablePageUrl(tab.url)) {
-    throw new Error("当前页面不支持直接写入剪贴板。请切换到普通网页后重试。");
-  }
-
-  const results = await chrome.scripting.executeScript({
-    target: { tabId: tab.id },
-    func: writeImageToClipboard,
-    args: [imageDataUrl]
-  });
-
-  const [{ result }] = results;
-  if (!result?.ok) {
-    throw new Error(result?.error || "写入剪贴板失败。");
   }
 }
 
@@ -372,38 +222,71 @@ async function handleCaptureVisibleArea(sender, sendResponse) {
   }
 }
 
-async function broadcastStateForActiveTab() {
+async function handleCopyImageToClipboard(sender, message, sendResponse) {
   try {
-    const tab = await getCurrentTab();
-    const state = tab?.id ? getSelectionStateForTab(tab.id, tab.url) : buildSelectionState(null, "");
+    if (!message?.imageDataUrl) {
+      throw new Error("缺少截图数据。");
+    }
 
-    await chrome.runtime.sendMessage({
-      type: "selection-state-changed",
-      state
-    });
+    if (!sender.tab?.id) {
+      throw new Error("未找到可写入剪贴板的标签页。");
+    }
+
+    await copyImageToClipboardInTab(sender.tab, message.imageDataUrl);
+
+    sendResponse({ ok: true });
   } catch (error) {
-    // Side panel may not be open.
+    console.error("Failed to write image to clipboard:", error);
+    sendResponse({
+      ok: false,
+      error: getErrorMessage(error)
+    });
   }
 }
 
-function getSelectionStateForTab(tabId, url) {
-  const existing = selectionSessions.get(tabId);
-  return buildSelectionState(tabId, url, existing || {});
+async function handleSelectionCopySuccess() {
+  await setSuccessActionState({
+    badgeText: "OK",
+    badgeColor: "#15803d",
+    title: "选区截图已复制到剪贴板"
+  });
 }
 
-function buildSelectionState(tabId, url, overrides = {}) {
-  return {
-    tabId,
-    isOpen: false,
-    mode: "rect",
-    zoomEnabled: false,
-    hasSelection: false,
-    canCopy: false,
-    isBusy: false,
-    supported: isInjectablePageUrl(url),
-    statusMessage: "",
-    ...overrides
-  };
+async function handleSelectionCopyFailure(errorMessage) {
+  const message = errorMessage || "选区截图失败。";
+
+  await setActionState({
+    badgeText: "",
+    badgeColor: "#b91c1c",
+    title: `截图失败：${message}`
+  });
+
+  try {
+    await notifyCaptureFailure(message);
+  } catch (notificationError) {
+    console.error("Failed to show selection failure notification:", notificationError);
+  }
+}
+
+async function copyImageToClipboardInTab(tab, imageDataUrl) {
+  if (!tab.id) {
+    throw new Error("未找到可注入脚本的标签页。");
+  }
+
+  if (!isWritablePageUrl(tab.url)) {
+    throw new Error("当前页面不支持直接写入剪贴板。请切换到普通网页后重试。");
+  }
+
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    func: writeImageToClipboard,
+    args: [imageDataUrl]
+  });
+
+  const [{ result }] = results;
+  if (!result?.ok) {
+    throw new Error(result?.error || "写入剪贴板失败。");
+  }
 }
 
 async function getCurrentTab() {

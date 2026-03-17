@@ -1,7 +1,6 @@
 (function bootstrapSelectionUi() {
   const GLOBAL_KEY = "__chromeSnipSelectionUi";
   const BOOTSTRAP_KEY = "__chromeSnipSelectionBootstrapData";
-  const BORDER_WIDTH = 2;
 
   if (window[GLOBAL_KEY]?.open) {
     if (window[GLOBAL_KEY]?.setBootstrapData) {
@@ -18,7 +17,11 @@
       this.isOpen = false;
       this.isBusy = false;
       this.isDragging = false;
+      this.dragMode = null;
       this.pointer = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+      this.dragStart = null;
+      this.dragOffset = null;
+      this.dragSelectionOrigin = null;
       this.selection = null;
       this.bootstrapData = readBootstrapData();
       this.previewDataUrl = this.bootstrapData?.previewDataUrl || null;
@@ -26,7 +29,6 @@
 
       this.buildUi();
       this.attachListeners();
-      this.attachRuntimeListener();
     }
 
     open() {
@@ -37,6 +39,10 @@
       this.isOpen = true;
       this.isBusy = false;
       this.isDragging = false;
+      this.dragMode = null;
+      this.dragStart = null;
+      this.dragOffset = null;
+      this.dragSelectionOrigin = null;
       this.selection = null;
       this.mode = "rect";
       this.zoomEnabled = false;
@@ -48,10 +54,10 @@
       this.updateVeilViewport();
       this.updateSelection();
       this.updateLens();
-      this.notifyState();
+      this.updateToolbar();
     }
 
-    close({ notify = true } = {}) {
+    close() {
       if (!this.isOpen) {
         return;
       }
@@ -59,6 +65,10 @@
       this.isOpen = false;
       this.isBusy = false;
       this.isDragging = false;
+      this.dragMode = null;
+      this.dragStart = null;
+      this.dragOffset = null;
+      this.dragSelectionOrigin = null;
       this.selection = null;
       this.previewPromise = null;
       this.previewDataUrl = this.bootstrapData?.previewDataUrl || null;
@@ -66,10 +76,7 @@
       this.root.style.visibility = "visible";
       this.lens.hidden = true;
       this.updateVeilCutout();
-
-      if (notify) {
-        this.notifySessionClosed();
-      }
+      this.updateToolbar();
     }
 
     setBootstrapData(bootstrapData) {
@@ -95,12 +102,14 @@
             inset: 0;
             z-index: 2147483647;
             cursor: crosshair;
+            user-select: none;
           }
 
           .veil {
             position: absolute;
             inset: 0;
             pointer-events: none;
+            z-index: 1;
           }
 
           .veil-svg {
@@ -110,7 +119,7 @@
           }
 
           .veil-fill {
-            fill: rgba(2, 6, 23, 0.24);
+            fill: rgba(2, 6, 23, 0.26);
           }
 
           .selection-stroke {
@@ -121,8 +130,105 @@
             filter: drop-shadow(0 0 0.75px rgba(127, 29, 29, 0.66));
           }
 
+          .toolbar {
+            position: fixed;
+            top: 16px;
+            right: 16px;
+            z-index: 3;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            height: 36px;
+            padding: 4px 6px;
+            border-radius: 999px;
+            background: linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(248, 250, 252, 0.98));
+            border: 1px solid rgba(148, 163, 184, 0.72);
+            box-shadow:
+              0 18px 40px rgba(15, 23, 42, 0.34),
+              0 6px 16px rgba(15, 23, 42, 0.18),
+              0 0 0 1px rgba(255, 255, 255, 0.72) inset;
+            backdrop-filter: blur(14px) saturate(1.12);
+            cursor: default;
+          }
+
+          .divider {
+            width: 1px;
+            align-self: stretch;
+            margin: 2px 1px;
+            background: rgba(100, 116, 139, 0.28);
+          }
+
+          .tool-button {
+            width: 28px;
+            height: 28px;
+            padding: 0;
+            border: none;
+            border-radius: 999px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            background: transparent;
+            color: #0f172a;
+            cursor: pointer;
+            transition: background-color 120ms ease, color 120ms ease, transform 120ms ease, box-shadow 120ms ease;
+          }
+
+          .tool-button:hover:not(:disabled) {
+            background: rgba(226, 232, 240, 0.9);
+            box-shadow: 0 1px 0 rgba(255, 255, 255, 0.7) inset;
+          }
+
+          .tool-button:active:not(:disabled) {
+            transform: scale(0.96);
+          }
+
+          .tool-button:disabled {
+            opacity: 0.4;
+            cursor: default;
+          }
+
+          .tool-button svg {
+            width: 18px;
+            height: 18px;
+            stroke: currentColor;
+            fill: none;
+            stroke-width: 2;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+          }
+
+          .tool-button[data-tool="rect"],
+          .tool-button[data-tool="circle"] {
+            color: #dc2626;
+          }
+
+          .tool-button[data-tool="zoom"] {
+            color: #0f172a;
+          }
+
+          .tool-button[data-tool="copy"] {
+            color: #15803d;
+          }
+
+          .tool-button[data-tool="cancel"] {
+            color: #b91c1c;
+          }
+
+          .tool-button.active[data-tool="rect"],
+          .tool-button.active[data-tool="circle"] {
+            background: rgba(254, 226, 226, 0.98);
+            box-shadow: 0 0 0 1px rgba(220, 38, 38, 0.12) inset;
+          }
+
+          .tool-button.active[data-tool="zoom"] {
+            background: rgba(219, 234, 254, 0.98);
+            color: #2563eb;
+            box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.12) inset;
+          }
+
           .lens {
             position: fixed;
+            z-index: 2;
             width: 168px;
             height: 168px;
             border-radius: 50%;
@@ -149,6 +255,38 @@
           }
         </style>
         <div class="root" hidden>
+          <div class="toolbar" role="toolbar" aria-label="选区工具">
+            <button class="tool-button" type="button" data-tool="rect" title="框选 (R)" aria-label="框选">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="5" y="5" width="14" height="14" rx="1.5"></rect>
+              </svg>
+            </button>
+            <button class="tool-button" type="button" data-tool="circle" title="圈选 (C)" aria-label="圈选">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <ellipse cx="12" cy="12" rx="7" ry="6"></ellipse>
+              </svg>
+            </button>
+            <button class="tool-button" type="button" data-tool="zoom" title="区域放大 (Z)" aria-label="区域放大">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="10.5" cy="10.5" r="5.5"></circle>
+                <path d="M10.5 8v5"></path>
+                <path d="M8 10.5h5"></path>
+                <path d="M15 15l4 4"></path>
+              </svg>
+            </button>
+            <div class="divider" aria-hidden="true"></div>
+            <button class="tool-button" type="button" data-tool="copy" title="复制选区 (Enter)" aria-label="复制选区">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 12.5l4.2 4.2L19 7.5"></path>
+              </svg>
+            </button>
+            <button class="tool-button" type="button" data-tool="cancel" title="取消 (Esc)" aria-label="取消">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M6 6l12 12"></path>
+                <path d="M18 6L6 18"></path>
+              </svg>
+            </button>
+          </div>
           <div class="veil">
             <svg class="veil-svg" aria-hidden="true">
               <defs>
@@ -168,6 +306,12 @@
       `;
 
       this.root = shadowRoot.querySelector(".root");
+      this.toolbar = shadowRoot.querySelector(".toolbar");
+      this.rectButton = shadowRoot.querySelector('[data-tool="rect"]');
+      this.circleButton = shadowRoot.querySelector('[data-tool="circle"]');
+      this.zoomButton = shadowRoot.querySelector('[data-tool="zoom"]');
+      this.copyButton = shadowRoot.querySelector('[data-tool="copy"]');
+      this.cancelButton = shadowRoot.querySelector('[data-tool="cancel"]');
       this.veilSvg = shadowRoot.querySelector(".veil-svg");
       this.veilHoleRect = shadowRoot.querySelector(".veil-hole-rect");
       this.veilHoleCircle = shadowRoot.querySelector(".veil-hole-circle");
@@ -178,6 +322,11 @@
 
     attachListeners() {
       this.root.addEventListener("pointerdown", (event) => this.handlePointerDown(event));
+      this.toolbar.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      });
+      this.toolbar.addEventListener("click", (event) => this.handleToolbarClick(event));
       window.addEventListener("pointermove", (event) => this.handlePointerMove(event), true);
       window.addEventListener("pointerup", (event) => this.handlePointerUp(event), true);
       window.addEventListener("keydown", (event) => this.handleKeyDown(event), true);
@@ -188,70 +337,37 @@
       window.addEventListener("resize", () => this.handleResize(), true);
     }
 
-    attachRuntimeListener() {
-      chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-        if (message?.type !== "selection-ui-command") {
-          return undefined;
+    handleToolbarClick(event) {
+      const button = event.target.closest("[data-tool]");
+      if (!button || this.isBusy) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      const tool = button.dataset.tool;
+      if (tool === "rect" || tool === "circle") {
+        this.mode = tool;
+        this.updateSelection();
+        this.updateToolbar();
+        return;
+      }
+
+      if (tool === "zoom") {
+        void this.toggleZoom();
+        return;
+      }
+
+      if (tool === "copy") {
+        if (this.selection) {
+          void this.copySelection();
         }
+        return;
+      }
 
-        void this.handleRuntimeCommand(message, sendResponse);
-        return true;
-      });
-    }
-
-    async handleRuntimeCommand(message, sendResponse) {
-      try {
-        if (message.command === "start-selection") {
-          this.open();
-          sendResponse({ ok: true, state: this.getStateSnapshot() });
-          return;
-        }
-
-        if (message.command === "set-mode") {
-          this.mode = message.mode === "circle" ? "circle" : "rect";
-          this.updateSelection();
-          this.notifyState();
-          sendResponse({ ok: true, state: this.getStateSnapshot() });
-          return;
-        }
-
-        if (message.command === "toggle-zoom") {
-          const nextEnabled = typeof message.enabled === "boolean" ? message.enabled : !this.zoomEnabled;
-          this.zoomEnabled = nextEnabled;
-
-          if (this.zoomEnabled) {
-            await this.ensurePreviewData();
-          }
-
-          this.updateLens();
-          this.notifyState();
-          sendResponse({ ok: true, state: this.getStateSnapshot() });
-          return;
-        }
-
-        if (message.command === "copy-selection") {
-          await this.copySelection();
-          sendResponse({ ok: true });
-          return;
-        }
-
-        if (message.command === "cancel-selection") {
-          this.close();
-          sendResponse({ ok: true, state: this.getStateSnapshot() });
-          return;
-        }
-
-        if (message.command === "get-state") {
-          sendResponse({ ok: true, state: this.getStateSnapshot() });
-          return;
-        }
-
-        sendResponse({ ok: false, error: "未知命令。" });
-      } catch (error) {
-        sendResponse({
-          ok: false,
-          error: error instanceof Error ? error.message : String(error)
-        });
+      if (tool === "cancel") {
+        this.close();
       }
     }
 
@@ -260,22 +376,38 @@
         return;
       }
 
+      if (event.composedPath().includes(this.toolbar)) {
+        return;
+      }
+
       event.preventDefault();
       event.stopPropagation();
 
       this.isDragging = true;
       this.pointer = { x: event.clientX, y: event.clientY };
-      this.dragStart = { x: event.clientX, y: event.clientY };
-      this.selection = {
-        x: event.clientX,
-        y: event.clientY,
-        width: 0,
-        height: 0
-      };
+      const hitExistingSelection = this.selection && this.isPointInsideSelection(event.clientX, event.clientY);
+
+      if (hitExistingSelection) {
+        this.dragMode = "move";
+        this.dragOffset = {
+          x: event.clientX - this.selection.x,
+          y: event.clientY - this.selection.y
+        };
+        this.dragSelectionOrigin = { ...this.selection };
+      } else {
+        this.dragMode = "create";
+        this.dragStart = { x: event.clientX, y: event.clientY };
+        this.selection = {
+          x: event.clientX,
+          y: event.clientY,
+          width: 0,
+          height: 0
+        };
+      }
 
       this.updateSelection();
       this.updateLens();
-      this.notifyState();
+      this.updateToolbar();
     }
 
     handlePointerMove(event) {
@@ -288,8 +420,20 @@
       if (this.isDragging) {
         event.preventDefault();
         event.stopPropagation();
-        this.selection = normalizeRect(this.dragStart.x, this.dragStart.y, event.clientX, event.clientY);
+        if (this.dragMode === "move" && this.selection) {
+          this.selection = moveRect(
+            this.dragSelectionOrigin || this.selection,
+            event.clientX - (this.dragOffset?.x || 0),
+            event.clientY - (this.dragOffset?.y || 0)
+          );
+        } else if (this.dragStart) {
+          this.selection = normalizeRect(this.dragStart.x, this.dragStart.y, event.clientX, event.clientY);
+        }
         this.updateSelection();
+      } else {
+        this.root.style.cursor = this.selection && this.isPointInsideSelection(event.clientX, event.clientY)
+          ? "move"
+          : "crosshair";
       }
 
       this.updateLens();
@@ -303,13 +447,16 @@
       event.preventDefault();
       event.stopPropagation();
       this.isDragging = false;
+      this.dragMode = null;
+      this.dragOffset = null;
+      this.dragSelectionOrigin = null;
 
       if (!this.selection || this.selection.width < 4 || this.selection.height < 4) {
         this.selection = null;
       }
 
       this.updateSelection();
-      this.notifyState();
+      this.updateToolbar();
     }
 
     handleKeyDown(event) {
@@ -321,6 +468,31 @@
         event.preventDefault();
         event.stopPropagation();
         this.close();
+        return;
+      }
+
+      if ((event.key === "r" || event.key === "R") && !this.isBusy) {
+        event.preventDefault();
+        event.stopPropagation();
+        this.mode = "rect";
+        this.updateSelection();
+        this.updateToolbar();
+        return;
+      }
+
+      if ((event.key === "c" || event.key === "C") && !this.isBusy) {
+        event.preventDefault();
+        event.stopPropagation();
+        this.mode = "circle";
+        this.updateSelection();
+        this.updateToolbar();
+        return;
+      }
+
+      if ((event.key === "z" || event.key === "Z") && !this.isBusy) {
+        event.preventDefault();
+        event.stopPropagation();
+        void this.toggleZoom();
         return;
       }
 
@@ -345,16 +517,26 @@
         return;
       }
 
-      this.previewDataUrl = null;
-      this.previewPromise = null;
       this.updateVeilViewport();
       this.updateSelection();
       this.updateLens();
     }
 
+    updateToolbar() {
+      this.rectButton.classList.toggle("active", this.mode === "rect");
+      this.circleButton.classList.toggle("active", this.mode === "circle");
+      this.zoomButton.classList.toggle("active", this.zoomEnabled);
+      this.copyButton.disabled = !this.selection || this.isBusy;
+      this.rectButton.disabled = this.isBusy;
+      this.circleButton.disabled = this.isBusy;
+      this.zoomButton.disabled = this.isBusy;
+      this.cancelButton.disabled = this.isBusy;
+    }
+
     updateSelection() {
       this.updateVeilViewport();
       this.updateVeilCutout();
+      this.updateToolbar();
     }
 
     updateLens() {
@@ -370,7 +552,7 @@
 
       this.lens.hidden = false;
       this.lens.style.left = `${clamp(x + 22, 16, window.innerWidth - lensSize - 16)}px`;
-      this.lens.style.top = `${clamp(y + 22, 16, window.innerHeight - lensSize - 16)}px`;
+      this.lens.style.top = `${clamp(y + 22, 60, window.innerHeight - lensSize - 16)}px`;
       this.lens.style.backgroundImage = `url("${this.previewDataUrl}")`;
       this.lens.style.backgroundSize = `${window.innerWidth * zoom}px ${window.innerHeight * zoom}px`;
       this.lens.style.backgroundPosition = `${-(x * zoom - lensSize / 2)}px ${-(y * zoom - lensSize / 2)}px`;
@@ -394,6 +576,17 @@
       });
 
       return this.previewPromise;
+    }
+
+    async toggleZoom() {
+      this.zoomEnabled = !this.zoomEnabled;
+
+      if (this.zoomEnabled) {
+        await this.ensurePreviewData();
+      }
+
+      this.updateLens();
+      this.updateToolbar();
     }
 
     hideOverlayForCapture() {
@@ -429,31 +622,83 @@
       }
     }
 
-    async copySelection() {
+    async prepareCopySelection() {
       if (!this.selection) {
         throw new Error("请先拖动选择截图区域。");
       }
 
       this.isBusy = true;
-      this.notifyState();
+      this.updateToolbar();
 
       try {
         const imageDataUrl = await this.captureVisibleArea({ restoreOverlay: false });
         const blob = await cropSelectionToBlob(imageDataUrl, this.selection, this.mode);
-        await writeBlobToClipboard(blob);
-        chrome.runtime.sendMessage({ type: "selection-copy-success" });
-        this.close({ notify: false });
+        return await blobToDataUrl(blob);
       } catch (error) {
         this.restoreOverlayAfterCapture();
+        this.isBusy = false;
+        this.updateToolbar();
+        throw error;
+      }
+    }
+
+    async copySelection() {
+      try {
+        const imageDataUrl = await this.prepareCopySelection();
+        const response = await chrome.runtime.sendMessage({
+          type: "copy-image-to-clipboard",
+          imageDataUrl
+        });
+
+        if (!response?.ok) {
+          throw new Error(response?.error || "写入剪贴板失败。");
+        }
+
+        this.finishCopySelection();
+      } catch (error) {
+        this.abortCopySelection();
         const message = error instanceof Error ? error.message : String(error);
         chrome.runtime.sendMessage({
           type: "selection-copy-failure",
           error: message
         });
-        this.isBusy = false;
-        this.notifyState();
-        throw error;
       }
+    }
+
+    finishCopySelection() {
+      chrome.runtime.sendMessage({ type: "selection-copy-success" });
+      this.close();
+    }
+
+    abortCopySelection() {
+      this.restoreOverlayAfterCapture();
+      this.isBusy = false;
+      this.updateToolbar();
+    }
+
+    isPointInsideSelection(pointX, pointY) {
+      if (!this.selection) {
+        return false;
+      }
+
+      if (this.mode === "circle") {
+        const radiusX = this.selection.width / 2;
+        const radiusY = this.selection.height / 2;
+        if (radiusX <= 0 || radiusY <= 0) {
+          return false;
+        }
+
+        const centerX = this.selection.x + radiusX;
+        const centerY = this.selection.y + radiusY;
+        const normalizedX = (pointX - centerX) / radiusX;
+        const normalizedY = (pointY - centerY) / radiusY;
+        return normalizedX * normalizedX + normalizedY * normalizedY <= 1;
+      }
+
+      return pointX >= this.selection.x
+        && pointX <= this.selection.x + this.selection.width
+        && pointY >= this.selection.y
+        && pointY <= this.selection.y + this.selection.height;
     }
 
     updateVeilViewport() {
@@ -463,9 +708,6 @@
     }
 
     updateVeilCutout() {
-      const strokeCenterOffset = BORDER_WIDTH / 2;
-      const innerInset = BORDER_WIDTH;
-
       if (!this.selection) {
         this.veilHoleRect.setAttribute("width", 0);
         this.veilHoleRect.setAttribute("height", 0);
@@ -481,80 +723,44 @@
       if (this.mode === "circle") {
         const centerX = this.selection.x + this.selection.width / 2;
         const centerY = this.selection.y + this.selection.height / 2;
-        const strokeRx = Math.max(0, this.selection.width / 2 - strokeCenterOffset);
-        const strokeRy = Math.max(0, this.selection.height / 2 - strokeCenterOffset);
+        const radiusX = Math.max(0, this.selection.width / 2 - 1);
+        const radiusY = Math.max(0, this.selection.height / 2 - 1);
 
         this.veilHoleRect.setAttribute("width", 0);
         this.veilHoleRect.setAttribute("height", 0);
         this.veilHoleCircle.setAttribute("cx", centerX);
         this.veilHoleCircle.setAttribute("cy", centerY);
-        this.veilHoleCircle.setAttribute("rx", Math.max(0, strokeRx - strokeCenterOffset));
-        this.veilHoleCircle.setAttribute("ry", Math.max(0, strokeRy - strokeCenterOffset));
+        this.veilHoleCircle.setAttribute("rx", radiusX);
+        this.veilHoleCircle.setAttribute("ry", radiusY);
 
         this.selectionStrokeRect.setAttribute("width", 0);
         this.selectionStrokeRect.setAttribute("height", 0);
         this.selectionStrokeCircle.setAttribute("cx", centerX);
         this.selectionStrokeCircle.setAttribute("cy", centerY);
-        this.selectionStrokeCircle.setAttribute("rx", strokeRx);
-        this.selectionStrokeCircle.setAttribute("ry", strokeRy);
+        this.selectionStrokeCircle.setAttribute("rx", radiusX);
+        this.selectionStrokeCircle.setAttribute("ry", radiusY);
         return;
       }
+
+      const x = this.selection.x + 1;
+      const y = this.selection.y + 1;
+      const width = Math.max(0, this.selection.width - 2);
+      const height = Math.max(0, this.selection.height - 2);
 
       this.veilHoleCircle.setAttribute("rx", 0);
       this.veilHoleCircle.setAttribute("ry", 0);
       this.selectionStrokeCircle.setAttribute("rx", 0);
       this.selectionStrokeCircle.setAttribute("ry", 0);
 
-      this.veilHoleRect.setAttribute("x", this.selection.x + innerInset);
-      this.veilHoleRect.setAttribute("y", this.selection.y + innerInset);
-      this.veilHoleRect.setAttribute("width", Math.max(0, this.selection.width - innerInset * 2));
-      this.veilHoleRect.setAttribute("height", Math.max(0, this.selection.height - innerInset * 2));
+      this.veilHoleRect.setAttribute("x", x);
+      this.veilHoleRect.setAttribute("y", y);
+      this.veilHoleRect.setAttribute("width", width);
+      this.veilHoleRect.setAttribute("height", height);
 
-      this.selectionStrokeRect.setAttribute("x", this.selection.x + strokeCenterOffset);
-      this.selectionStrokeRect.setAttribute("y", this.selection.y + strokeCenterOffset);
-      this.selectionStrokeRect.setAttribute("width", Math.max(0, this.selection.width - strokeCenterOffset * 2));
-      this.selectionStrokeRect.setAttribute("height", Math.max(0, this.selection.height - strokeCenterOffset * 2));
-    }
-
-    getStateSnapshot() {
-      return {
-        isOpen: this.isOpen,
-        mode: this.mode,
-        zoomEnabled: this.zoomEnabled,
-        hasSelection: Boolean(this.selection),
-        canCopy: Boolean(this.selection) && !this.isBusy,
-        isBusy: this.isBusy,
-        statusMessage: this.describeSelection()
-      };
-    }
-
-    describeSelection() {
-      if (!this.selection) {
-        return this.isOpen ? "拖动鼠标开始选择区域" : "选区模式未启动";
-      }
-
-      return `${this.mode === "circle" ? "圈选" : "框选"} ${Math.round(this.selection.width)} × ${Math.round(this.selection.height)}`;
-    }
-
-    notifyState() {
-      try {
-        chrome.runtime.sendMessage({
-          type: "selection-state-changed",
-          state: this.getStateSnapshot()
-        });
-      } catch (error) {
-        // Ignore when the background is restarting.
-      }
-    }
-
-    notifySessionClosed() {
-      try {
-        chrome.runtime.sendMessage({
-          type: "selection-session-closed"
-        });
-      } catch (error) {
-        // Ignore when the background is restarting.
-      }
+      this.selectionStrokeRect.setAttribute("x", x);
+      this.selectionStrokeRect.setAttribute("y", y);
+      this.selectionStrokeRect.setAttribute("width", width);
+      this.selectionStrokeRect.setAttribute("height", height);
     }
   }
 
@@ -565,6 +771,15 @@
     const height = Math.abs(endY - startY);
 
     return { x, y, width, height };
+  }
+
+  function moveRect(rect, nextX, nextY) {
+    return {
+      x: clamp(nextX, 0, Math.max(0, window.innerWidth - rect.width)),
+      y: clamp(nextY, 0, Math.max(0, window.innerHeight - rect.height)),
+      width: rect.width,
+      height: rect.height
+    };
   }
 
   async function cropSelectionToBlob(imageDataUrl, selection, mode) {
@@ -636,20 +851,13 @@
     });
   }
 
-  async function writeBlobToClipboard(blob) {
-    if (!window.isSecureContext) {
-      throw new Error("当前页面不是安全上下文，无法写入图片到剪贴板。");
-    }
-
-    if (!document.hasFocus()) {
-      window.focus();
-    }
-
-    await navigator.clipboard.write([
-      new ClipboardItem({
-        [blob.type || "image/png"]: blob
-      })
-    ]);
+  function blobToDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error("无法读取截图数据。"));
+      reader.readAsDataURL(blob);
+    });
   }
 
   function nextFrame() {
