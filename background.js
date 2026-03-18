@@ -50,6 +50,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return undefined;
   }
 
+  if (message?.type === "annotation-copy-success") {
+    void handleAnnotationCopySuccess();
+    return undefined;
+  }
+
+  if (message?.type === "annotation-copy-failure") {
+    void handleAnnotationCopyFailure(message.error);
+    return undefined;
+  }
+
   return undefined;
 });
 
@@ -133,6 +143,8 @@ async function captureAndCopy(invokedTab) {
       badgeColor: "#15803d",
       title: "截图已复制到剪贴板"
     });
+
+    void launchAnnotationPrompt(tab, imageDataUrl);
   } catch (error) {
     console.error("Capture or clipboard write failed:", error);
 
@@ -147,6 +159,27 @@ async function captureAndCopy(invokedTab) {
     } catch (notificationError) {
       console.error("Failed to show capture failure notification:", notificationError);
     }
+  }
+}
+
+async function launchAnnotationPrompt(tab, imageDataUrl) {
+  try {
+    if (!tab?.id || !imageDataUrl || !isInjectablePageUrl(tab.url)) {
+      return;
+    }
+
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: setAnnotationBootstrapData,
+      args: [{ imageDataUrl }]
+    });
+
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      files: ["annotation-ui.js"]
+    });
+  } catch (error) {
+    console.error("Failed to launch annotation prompt:", error);
   }
 }
 
@@ -265,6 +298,30 @@ async function handleSelectionCopyFailure(errorMessage) {
     await notifyCaptureFailure(message);
   } catch (notificationError) {
     console.error("Failed to show selection failure notification:", notificationError);
+  }
+}
+
+async function handleAnnotationCopySuccess() {
+  await setSuccessActionState({
+    badgeText: "OK",
+    badgeColor: "#15803d",
+    title: "标注截图已复制到剪贴板"
+  });
+}
+
+async function handleAnnotationCopyFailure(errorMessage) {
+  const message = errorMessage || "标注截图失败。";
+
+  await setActionState({
+    badgeText: "",
+    badgeColor: "#b91c1c",
+    title: `标注失败：${message}`
+  });
+
+  try {
+    await notifyCaptureFailure(message);
+  } catch (notificationError) {
+    console.error("Failed to show annotation failure notification:", notificationError);
   }
 }
 
@@ -420,6 +477,17 @@ async function writeImageToClipboard(imageDataUrl) {
 function setSelectionBootstrapData(bootstrapData) {
   const bootstrapKey = "__chromeSnipSelectionBootstrapData";
   const instanceKey = "__chromeSnipSelectionUi";
+
+  window[bootstrapKey] = bootstrapData;
+
+  if (window[instanceKey]?.setBootstrapData) {
+    window[instanceKey].setBootstrapData(bootstrapData);
+  }
+}
+
+function setAnnotationBootstrapData(bootstrapData) {
+  const bootstrapKey = "__chromeSnipAnnotationBootstrapData";
+  const instanceKey = "__chromeSnipAnnotationUi";
 
   window[bootstrapKey] = bootstrapData;
 
