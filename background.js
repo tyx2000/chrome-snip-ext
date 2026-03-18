@@ -100,9 +100,7 @@ function handleActionClick(tab) {
 
   if (pendingActionClick) {
     clearTimeout(pendingActionClick.timerId);
-    const previousTab = pendingActionClick.tab;
     pendingActionClick = null;
-    void captureAndCopy(previousTab);
   }
 
   const timerId = setTimeout(() => {

@@ -4,8 +4,11 @@
   const STROKE_COLOR = "#dc2626";
   const STROKE_WIDTH = 4;
   const FONT_SIZE = 22;
-  const PROMPT_IDLE_MS = 5000;
+  const PROMPT_IDLE_MS = 3000;
+  const PROMPT_TRANSITION_MS = 180;
+  const EDITOR_TRANSITION_MS = 220;
   const DRAG_THRESHOLD = 2;
+  const MAX_HISTORY_ENTRIES = 50;
 
   if (window[GLOBAL_KEY]?.openPrompt) {
     if (window[GLOBAL_KEY]?.setBootstrapData) {
@@ -31,6 +34,8 @@
       this.history = [[]];
       this.nextAnnotationId = 1;
       this.promptIdleTimer = null;
+      this.promptVisibilityTimer = null;
+      this.editorVisibilityTimer = null;
 
       this.buildUi();
       this.attachListeners();
@@ -49,8 +54,8 @@
 
       this.ensureHost();
       this.closeEditor({ keepPrompt: false });
-      this.prompt.hidden = false;
       this.isPromptOpen = true;
+      this.showPrompt();
       this.schedulePromptAutoHide();
     }
 
@@ -91,6 +96,16 @@
             backdrop-filter: blur(14px) saturate(1.12);
             color: #0f172a;
             font: 500 13px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            opacity: 0;
+            transform: translateY(-8px) scale(0.98);
+            transition: opacity 180ms ease, transform 180ms ease;
+            pointer-events: none;
+          }
+
+          .prompt[data-visible="true"] {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+            pointer-events: auto;
           }
 
           .prompt-label {
@@ -131,26 +146,43 @@
             justify-content: center;
             background: rgba(2, 6, 23, 0.72);
             backdrop-filter: blur(5px);
+            opacity: 0;
+            transition: opacity 220ms ease;
+            pointer-events: none;
+          }
+
+          .editor[data-visible="true"] {
+            opacity: 1;
+            pointer-events: auto;
           }
 
           .shell {
             position: relative;
-            width: min(92vw, 1480px);
-            height: min(90vh, 980px);
-            padding: 64px 28px 28px;
-            border-radius: 28px;
+            width: calc(100vw - 20px);
+            height: calc(100vh - 20px);
+            padding: 54px 10px 10px;
+            box-sizing: border-box;
+            border-radius: 24px;
             background:
               radial-gradient(circle at top right, rgba(248, 113, 113, 0.08), transparent 26%),
               linear-gradient(180deg, rgba(255, 255, 255, 0.97), rgba(248, 250, 252, 0.98));
             box-shadow:
               0 28px 60px rgba(15, 23, 42, 0.4),
               0 0 0 1px rgba(255, 255, 255, 0.58) inset;
+            opacity: 0;
+            transform: translateY(12px) scale(0.985);
+            transition: opacity 220ms ease, transform 220ms ease;
+          }
+
+          .editor[data-visible="true"] .shell {
+            opacity: 1;
+            transform: translateY(0) scale(1);
           }
 
           .toolbar {
             position: absolute;
-            top: 18px;
-            right: 18px;
+            top: 10px;
+            right: 10px;
             display: flex;
             align-items: center;
             gap: 4px;
@@ -222,7 +254,7 @@
             align-items: center;
             justify-content: center;
             overflow: hidden;
-            padding: 16px;
+            padding: 10px;
             box-sizing: border-box;
             border-radius: 20px;
             background:
@@ -327,21 +359,41 @@
       this.overlayCanvas = shadowRoot.querySelector(".overlay-canvas");
       this.baseContext = this.baseCanvas.getContext("2d");
       this.overlayContext = this.overlayCanvas.getContext("2d");
-      this.toolButtons = Array.from(shadowRoot.querySelectorAll(".tool-button[data-tool]"));
+      this.toolButtons = Array.from(
+        shadowRoot.querySelectorAll(".tool-button[data-tool]"),
+      );
     }
 
     attachListeners() {
-      this.prompt.addEventListener("click", (event) => this.handlePromptClick(event));
+      this.prompt.addEventListener("click", (event) =>
+        this.handlePromptClick(event),
+      );
       this.editor.addEventListener("click", (event) => {
         if (event.target === this.editor) {
           this.closeAll();
         }
       });
-      this.editor.addEventListener("click", (event) => this.handleToolbarClick(event));
-      this.viewport.addEventListener("pointerdown", (event) => this.handlePointerDown(event));
-      window.addEventListener("pointermove", (event) => this.handlePointerMove(event), true);
-      window.addEventListener("pointerup", (event) => this.handlePointerUp(event), true);
-      window.addEventListener("keydown", (event) => this.handleKeyDown(event), true);
+      this.editor.addEventListener("click", (event) =>
+        this.handleToolbarClick(event),
+      );
+      this.viewport.addEventListener("pointerdown", (event) =>
+        this.handlePointerDown(event),
+      );
+      window.addEventListener(
+        "pointermove",
+        (event) => this.handlePointerMove(event),
+        true,
+      );
+      window.addEventListener(
+        "pointerup",
+        (event) => this.handlePointerUp(event),
+        true,
+      );
+      window.addEventListener(
+        "keydown",
+        (event) => this.handleKeyDown(event),
+        true,
+      );
       window.addEventListener("resize", () => this.handleResize(), true);
     }
 
@@ -369,20 +421,29 @@
         return;
       }
 
-      this.ensureHost();
-      await this.ensureImageLoaded();
-      this.clearPromptAutoHide();
-      this.prompt.hidden = true;
-      this.isPromptOpen = false;
-      this.editor.hidden = false;
-      this.isEditorOpen = true;
-      this.syncCanvases();
-      this.resetEditor();
+      try {
+        this.ensureHost();
+        await this.ensureImageLoaded();
+        this.clearPromptAutoHide();
+        this.hidePrompt();
+        this.isPromptOpen = false;
+        this.isEditorOpen = true;
+        this.showEditor();
+        this.syncCanvases();
+        this.resetEditor();
+      } catch (error) {
+        console.error("Failed to open annotation editor:", error);
+        this.closeAll();
+        chrome.runtime.sendMessage({
+          type: "annotation-copy-failure",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
 
     closeEditor({ keepPrompt = false } = {}) {
-      this.editor.hidden = true;
       this.isEditorOpen = false;
+      this.hideEditor();
       this.isDrawing = false;
       this.draft = null;
       this.dragState = null;
@@ -390,8 +451,8 @@
       this.removeTextInput();
 
       if (keepPrompt && this.imageDataUrl) {
-        this.prompt.hidden = false;
         this.isPromptOpen = true;
+        this.showPrompt();
         this.schedulePromptAutoHide();
       }
     }
@@ -399,7 +460,7 @@
     closeAll() {
       this.clearPromptAutoHide();
       this.closeEditor({ keepPrompt: false });
-      this.prompt.hidden = true;
+      this.hidePrompt();
       this.isPromptOpen = false;
     }
 
@@ -414,8 +475,8 @@
         this.promptIdleTimer = null;
 
         if (this.isPromptOpen) {
-          this.prompt.hidden = true;
           this.isPromptOpen = false;
+          this.hidePrompt();
         }
       }, PROMPT_IDLE_MS);
     }
@@ -425,6 +486,58 @@
         clearTimeout(this.promptIdleTimer);
         this.promptIdleTimer = null;
       }
+    }
+
+    showPrompt() {
+      if (this.promptVisibilityTimer) {
+        clearTimeout(this.promptVisibilityTimer);
+        this.promptVisibilityTimer = null;
+      }
+
+      this.prompt.hidden = false;
+      requestAnimationFrame(() => {
+        this.prompt.dataset.visible = "true";
+      });
+    }
+
+    hidePrompt() {
+      if (this.promptVisibilityTimer) {
+        clearTimeout(this.promptVisibilityTimer);
+      }
+
+      this.prompt.dataset.visible = "false";
+      this.promptVisibilityTimer = setTimeout(() => {
+        this.promptVisibilityTimer = null;
+        if (this.prompt.dataset.visible !== "true") {
+          this.prompt.hidden = true;
+        }
+      }, PROMPT_TRANSITION_MS);
+    }
+
+    showEditor() {
+      if (this.editorVisibilityTimer) {
+        clearTimeout(this.editorVisibilityTimer);
+        this.editorVisibilityTimer = null;
+      }
+
+      this.editor.hidden = false;
+      requestAnimationFrame(() => {
+        this.editor.dataset.visible = "true";
+      });
+    }
+
+    hideEditor() {
+      if (this.editorVisibilityTimer) {
+        clearTimeout(this.editorVisibilityTimer);
+      }
+
+      this.editor.dataset.visible = "false";
+      this.editorVisibilityTimer = setTimeout(() => {
+        this.editorVisibilityTimer = null;
+        if (this.editor.dataset.visible !== "true") {
+          this.editor.hidden = true;
+        }
+      }, EDITOR_TRANSITION_MS);
     }
 
     async ensureImageLoaded() {
@@ -441,17 +554,25 @@
         return;
       }
 
-      const workspaceWidth = this.workspace?.clientWidth || Math.round(window.innerWidth * 0.82);
-      const workspaceHeight = this.workspace?.clientHeight || Math.round(window.innerHeight * 0.72);
+      const workspaceWidth =
+        this.workspace?.clientWidth || Math.round(window.innerWidth * 0.82);
+      const workspaceHeight =
+        this.workspace?.clientHeight || Math.round(window.innerHeight * 0.72);
       const availableWidth = Math.max(1, workspaceWidth - 20);
       const availableHeight = Math.max(1, workspaceHeight - 20);
       const scale = Math.min(
         availableWidth / this.image.naturalWidth,
         availableHeight / this.image.naturalHeight,
-        1
+        1,
       );
-      const displayWidth = Math.max(1, Math.round(this.image.naturalWidth * scale));
-      const displayHeight = Math.max(1, Math.round(this.image.naturalHeight * scale));
+      const displayWidth = Math.max(
+        1,
+        Math.round(this.image.naturalWidth * scale),
+      );
+      const displayHeight = Math.max(
+        1,
+        Math.round(this.image.naturalHeight * scale),
+      );
 
       this.viewport.style.width = `${displayWidth}px`;
       this.viewport.style.height = `${displayHeight}px`;
@@ -485,17 +606,31 @@
         return;
       }
 
-      this.baseContext.clearRect(0, 0, this.baseCanvas.width, this.baseCanvas.height);
+      this.baseContext.clearRect(
+        0,
+        0,
+        this.baseCanvas.width,
+        this.baseCanvas.height,
+      );
       this.baseContext.drawImage(this.image, 0, 0);
 
+      const zoomAnnotations = [];
       for (const annotation of this.annotations) {
         if (annotation.type === "zoom") {
-          const snapshot = cloneCanvas(this.baseCanvas);
-          drawZoomAnnotation(this.baseContext, snapshot, annotation);
+          zoomAnnotations.push(annotation);
           continue;
         }
 
         drawAnnotation(this.baseContext, annotation);
+      }
+
+      if (!zoomAnnotations.length) {
+        return;
+      }
+
+      const snapshot = cloneCanvas(this.baseCanvas);
+      for (const annotation of zoomAnnotations) {
+        drawZoomAnnotation(this.baseContext, snapshot, annotation);
       }
     }
 
@@ -512,19 +647,23 @@
           x: this.draft.rect.x,
           y: this.draft.rect.y,
           width: this.draft.rect.width,
-          height: this.draft.rect.height
+          height: this.draft.rect.height,
         });
       } else if (this.draft.type === "arrow") {
         drawArrowAnnotation(this.overlayContext, {
           start: this.draft.start,
-          end: this.draft.end
+          end: this.draft.end,
         });
       } else if (this.draft.type === "brush") {
         drawBrushAnnotation(this.overlayContext, {
-          points: this.draft.points
+          points: this.draft.points,
         });
       } else if (this.draft.type === "zoom") {
-        drawZoomDraft(this.overlayContext, this.draft.sourceRect, this.draft.calloutRect);
+        drawZoomDraft(
+          this.overlayContext,
+          this.draft.sourceRect,
+          this.draft.calloutRect,
+        );
       }
       this.overlayContext.restore();
     }
@@ -539,7 +678,9 @@
     }
 
     updateUndoButton() {
-      const undoButton = this.toolButtons.find((button) => button.dataset.tool === "undo");
+      const undoButton = this.toolButtons.find(
+        (button) => button.dataset.tool === "undo",
+      );
       if (undoButton) {
         undoButton.disabled = this.history.length <= 1;
       }
@@ -598,7 +739,7 @@
           annotationId: hit.id,
           startPoint: point,
           origin: cloneAnnotation(hit.annotation),
-          moved: false
+          moved: false,
         };
         return;
       }
@@ -613,7 +754,7 @@
       if (this.tool === "brush") {
         this.draft = {
           type: "brush",
-          points: [point]
+          points: [point],
         };
         this.renderDraft();
         return;
@@ -625,7 +766,7 @@
           start: point,
           end: point,
           sourceRect: { x: point.x, y: point.y, width: 0, height: 0 },
-          calloutRect: null
+          calloutRect: null,
         };
         this.renderDraft();
         return;
@@ -635,7 +776,7 @@
         type: this.tool,
         start: point,
         end: point,
-        rect: { x: point.x, y: point.y, width: 0, height: 0 }
+        rect: { x: point.x, y: point.y, width: 0, height: 0 },
       };
       this.renderDraft();
     }
@@ -675,7 +816,7 @@
           dx,
           dy,
           this.baseCanvas.width,
-          this.baseCanvas.height
+          this.baseCanvas.height,
         );
 
         replaceAnnotation(this.annotations, moved);
@@ -738,7 +879,10 @@
       this.isDrawing = false;
 
       if (this.draft.type === "brush") {
-        const annotation = buildBrushAnnotation(this.nextAnnotationId, this.draft.points);
+        const annotation = buildBrushAnnotation(
+          this.nextAnnotationId,
+          this.draft.points,
+        );
         this.draft = null;
         this.clearOverlay();
 
@@ -754,7 +898,10 @@
       if (this.draft.type === "zoom") {
         if (point) {
           this.draft.sourceRect = normalizeRect(this.draft.start, point);
-          if (this.draft.sourceRect.width >= 12 && this.draft.sourceRect.height >= 12) {
+          if (
+            this.draft.sourceRect.width >= 12 &&
+            this.draft.sourceRect.height >= 12
+          ) {
             const annotation = {
               id: this.nextAnnotationId,
               type: "zoom",
@@ -763,8 +910,8 @@
                 this.draft.sourceRect,
                 this.baseCanvas.width,
                 this.baseCanvas.height,
-                this.annotations
-              )
+                this.annotations,
+              ),
             };
             this.annotations.push(annotation);
             this.nextAnnotationId += 1;
@@ -792,16 +939,19 @@
         annotation = {
           id: this.nextAnnotationId,
           type: "rect",
-          ...rect
+          ...rect,
         };
       }
 
-      if (this.draft.type === "arrow" && (rect.width >= 4 || rect.height >= 4)) {
+      if (
+        this.draft.type === "arrow" &&
+        (rect.width >= 4 || rect.height >= 4)
+      ) {
         annotation = {
           id: this.nextAnnotationId,
           type: "arrow",
           start: this.draft.start,
-          end: point
+          end: point,
         };
       }
 
@@ -855,7 +1005,7 @@
         a: "arrow",
         b: "brush",
         t: "text",
-        z: "zoom"
+        z: "zoom",
       };
 
       const nextTool = hotkeys[event.key.toLowerCase()];
@@ -888,7 +1038,7 @@
 
       return {
         x: x * (this.baseCanvas.width / rect.width),
-        y: y * (this.baseCanvas.height / rect.height)
+        y: y * (this.baseCanvas.height / rect.height),
       };
     }
 
@@ -896,7 +1046,7 @@
       const rect = this.viewport.getBoundingClientRect();
       return {
         x: point.x * (rect.width / this.baseCanvas.width),
-        y: point.y * (rect.height / this.baseCanvas.height)
+        y: point.y * (rect.height / this.baseCanvas.height),
       };
     }
 
@@ -932,7 +1082,7 @@
 
       const point = {
         x: Number(this.compositionInput.dataset.canvasX || "0"),
-        y: Number(this.compositionInput.dataset.canvasY || "0")
+        y: Number(this.compositionInput.dataset.canvasY || "0"),
       };
       const displayPoint = this.getDisplayPoint(point);
       this.compositionInput.style.left = `${displayPoint.x}px`;
@@ -974,7 +1124,7 @@
         y,
         lines,
         width: metrics.width,
-        height: metrics.height
+        height: metrics.height,
       });
       this.nextAnnotationId += 1;
       this.recordHistory();
@@ -983,6 +1133,9 @@
 
     recordHistory() {
       this.history.push(cloneAnnotations(this.annotations));
+      if (this.history.length > MAX_HISTORY_ENTRIES) {
+        this.history.splice(0, this.history.length - MAX_HISTORY_ENTRIES);
+      }
       this.updateUndoButton();
     }
 
@@ -995,8 +1148,14 @@
       }
 
       this.history.pop();
-      this.annotations = cloneAnnotations(this.history[this.history.length - 1]);
-      this.nextAnnotationId = this.annotations.reduce((maxId, annotation) => Math.max(maxId, annotation.id), 0) + 1;
+      this.annotations = cloneAnnotations(
+        this.history[this.history.length - 1],
+      );
+      this.nextAnnotationId =
+        this.annotations.reduce(
+          (maxId, annotation) => Math.max(maxId, annotation.id),
+          0,
+        ) + 1;
       this.dragState = null;
       this.draft = null;
       this.clearOverlay();
@@ -1010,7 +1169,7 @@
         if (hitTestAnnotation(annotation, point)) {
           return {
             id: annotation.id,
-            annotation
+            annotation,
           };
         }
       }
@@ -1019,11 +1178,19 @@
     }
 
     findAnnotationById(annotationId) {
-      return this.annotations.find((annotation) => annotation.id === annotationId) || null;
+      return (
+        this.annotations.find((annotation) => annotation.id === annotationId) ||
+        null
+      );
     }
 
     clearOverlay() {
-      this.overlayContext.clearRect(0, 0, this.overlayCanvas.width, this.overlayCanvas.height);
+      this.overlayContext.clearRect(
+        0,
+        0,
+        this.overlayCanvas.width,
+        this.overlayCanvas.height,
+      );
     }
 
     async copyAnnotatedImage() {
@@ -1034,7 +1201,7 @@
         const imageDataUrl = this.baseCanvas.toDataURL("image/png");
         const response = await chrome.runtime.sendMessage({
           type: "copy-image-to-clipboard",
-          imageDataUrl
+          imageDataUrl,
         });
 
         if (!response?.ok) {
@@ -1046,7 +1213,7 @@
       } catch (error) {
         chrome.runtime.sendMessage({
           type: "annotation-copy-failure",
-          error: error instanceof Error ? error.message : String(error)
+          error: error instanceof Error ? error.message : String(error),
         });
       }
     }
@@ -1070,7 +1237,12 @@
 
   function drawRectAnnotation(context, annotation) {
     applyStrokeStyle(context);
-    context.strokeRect(annotation.x, annotation.y, annotation.width, annotation.height);
+    context.strokeRect(
+      annotation.x,
+      annotation.y,
+      annotation.width,
+      annotation.height,
+    );
   }
 
   function drawArrowAnnotation(context, annotation) {
@@ -1098,20 +1270,37 @@
     context.font = `600 ${FONT_SIZE}px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
 
     for (let index = 0; index < annotation.lines.length; index += 1) {
-      context.fillText(annotation.lines[index], annotation.x, annotation.y + index * Math.round(FONT_SIZE * 1.35));
+      context.fillText(
+        annotation.lines[index],
+        annotation.x,
+        annotation.y + index * Math.round(FONT_SIZE * 1.35),
+      );
     }
   }
 
   function drawZoomDraft(context, sourceRect, calloutRect) {
     applyStrokeStyle(context);
-    context.strokeRect(sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height);
+    context.strokeRect(
+      sourceRect.x,
+      sourceRect.y,
+      sourceRect.width,
+      sourceRect.height,
+    );
 
     if (!calloutRect) {
       return;
     }
 
-    context.strokeRect(calloutRect.x, calloutRect.y, calloutRect.width, calloutRect.height);
-    const [sourceAnchor, targetAnchor] = getCalloutAnchors(sourceRect, calloutRect);
+    context.strokeRect(
+      calloutRect.x,
+      calloutRect.y,
+      calloutRect.width,
+      calloutRect.height,
+    );
+    const [sourceAnchor, targetAnchor] = getCalloutAnchors(
+      sourceRect,
+      calloutRect,
+    );
     drawBezierConnector(context, sourceAnchor, targetAnchor);
   }
 
@@ -1153,13 +1342,31 @@
     const headBaseY = end.y - unitY * headLength;
 
     return [
-      { x: start.x + normalX * (tailWidth / 2), y: start.y + normalY * (tailWidth / 2) },
-      { x: headBaseX + normalX * (neckWidth / 2), y: headBaseY + normalY * (neckWidth / 2) },
-      { x: headBaseX + normalX * (headWidth / 2), y: headBaseY + normalY * (headWidth / 2) },
+      {
+        x: start.x + normalX * (tailWidth / 2),
+        y: start.y + normalY * (tailWidth / 2),
+      },
+      {
+        x: headBaseX + normalX * (neckWidth / 2),
+        y: headBaseY + normalY * (neckWidth / 2),
+      },
+      {
+        x: headBaseX + normalX * (headWidth / 2),
+        y: headBaseY + normalY * (headWidth / 2),
+      },
       { x: end.x, y: end.y },
-      { x: headBaseX - normalX * (headWidth / 2), y: headBaseY - normalY * (headWidth / 2) },
-      { x: headBaseX - normalX * (neckWidth / 2), y: headBaseY - normalY * (neckWidth / 2) },
-      { x: start.x - normalX * (tailWidth / 2), y: start.y - normalY * (tailWidth / 2) }
+      {
+        x: headBaseX - normalX * (headWidth / 2),
+        y: headBaseY - normalY * (headWidth / 2),
+      },
+      {
+        x: headBaseX - normalX * (neckWidth / 2),
+        y: headBaseY - normalY * (neckWidth / 2),
+      },
+      {
+        x: start.x - normalX * (tailWidth / 2),
+        y: start.y - normalY * (tailWidth / 2),
+      },
     ];
   }
 
@@ -1172,7 +1379,12 @@
     context.shadowBlur = 18;
     context.shadowOffsetX = 0;
     context.shadowOffsetY = 6;
-    context.strokeRect(sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height);
+    context.strokeRect(
+      sourceRect.x,
+      sourceRect.y,
+      sourceRect.width,
+      sourceRect.height,
+    );
     context.restore();
 
     context.save();
@@ -1181,7 +1393,12 @@
     context.shadowBlur = 22;
     context.shadowOffsetX = 0;
     context.shadowOffsetY = 10;
-    context.fillRect(calloutRect.x, calloutRect.y, calloutRect.width, calloutRect.height);
+    context.fillRect(
+      calloutRect.x,
+      calloutRect.y,
+      calloutRect.width,
+      calloutRect.height,
+    );
     context.restore();
 
     context.drawImage(
@@ -1193,7 +1410,7 @@
       calloutRect.x,
       calloutRect.y,
       calloutRect.width,
-      calloutRect.height
+      calloutRect.height,
     );
 
     context.save();
@@ -1201,10 +1418,18 @@
     context.shadowBlur = 20;
     context.shadowOffsetX = 0;
     context.shadowOffsetY = 8;
-    context.strokeRect(calloutRect.x, calloutRect.y, calloutRect.width, calloutRect.height);
+    context.strokeRect(
+      calloutRect.x,
+      calloutRect.y,
+      calloutRect.width,
+      calloutRect.height,
+    );
     context.restore();
 
-    const [sourceAnchor, targetAnchor] = getCalloutAnchors(sourceRect, calloutRect);
+    const [sourceAnchor, targetAnchor] = getCalloutAnchors(
+      sourceRect,
+      calloutRect,
+    );
     context.save();
     context.shadowColor = "rgba(220, 38, 38, 0.14)";
     context.shadowBlur = 8;
@@ -1212,18 +1437,24 @@
     context.restore();
   }
 
-  function chooseZoomCalloutRect(sourceRect, canvasWidth, canvasHeight, annotations) {
+  function chooseZoomCalloutRect(
+    sourceRect,
+    canvasWidth,
+    canvasHeight,
+    annotations,
+  ) {
     const preferredScale = 1.8;
     const safeSourceWidth = Math.max(sourceRect.width, 1);
     const safeSourceHeight = Math.max(sourceRect.height, 1);
     const maxScale = Math.min(
       (canvasWidth * 0.38) / safeSourceWidth,
-      (canvasHeight * 0.38) / safeSourceHeight
+      (canvasHeight * 0.38) / safeSourceHeight,
     );
     const minScale = Math.max(96 / safeSourceWidth, 72 / safeSourceHeight, 1);
-    const scale = maxScale >= minScale
-      ? clamp(preferredScale, minScale, maxScale)
-      : Math.max(1, maxScale);
+    const scale =
+      maxScale >= minScale
+        ? clamp(preferredScale, minScale, maxScale)
+        : Math.max(1, maxScale);
     const width = Math.max(1, Math.round(safeSourceWidth * scale));
     const height = Math.max(1, Math.round(safeSourceHeight * scale));
     const offset = 28;
@@ -1238,7 +1469,7 @@
       sourceRect.x - width - offset,
       sourceCenter.x - width / 2,
       12,
-      canvasWidth - width - 12
+      canvasWidth - width - 12,
     ];
     const yAnchors = [
       sourceRect.y + sourceRect.height / 2 - height / 2,
@@ -1246,7 +1477,7 @@
       sourceRect.y + sourceRect.height + offset,
       sourceCenter.y - height / 2,
       12,
-      canvasHeight - height - 12
+      canvasHeight - height - 12,
     ];
 
     for (const x of xAnchors) {
@@ -1255,7 +1486,7 @@
           x: clamp(x, 12, canvasWidth - width - 12),
           y: clamp(y, 12, canvasHeight - height - 12),
           width,
-          height
+          height,
         });
       }
     }
@@ -1266,11 +1497,25 @@
     let bestScore = Number.POSITIVE_INFINITY;
 
     for (const candidate of uniqueCandidates) {
-      const overlapArea = existing.reduce((total, rect) => total + rectIntersectionArea(candidate, rect), 0);
+      const overlapArea = existing.reduce(
+        (total, rect) => total + rectIntersectionArea(candidate, rect),
+        0,
+      );
       const sourceOverlapArea = rectIntersectionArea(candidate, sourceRect);
-      const distanceScore = distanceBetween(rectCenter(candidate), sourceCenter);
-      const edgePenalty = edgeTouchPenalty(candidate, canvasWidth, canvasHeight);
-      const score = overlapArea * 12 + sourceOverlapArea * 24 + distanceScore * 0.03 + edgePenalty;
+      const distanceScore = distanceBetween(
+        rectCenter(candidate),
+        sourceCenter,
+      );
+      const edgePenalty = edgeTouchPenalty(
+        candidate,
+        canvasWidth,
+        canvasHeight,
+      );
+      const score =
+        overlapArea * 12 +
+        sourceOverlapArea * 24 +
+        distanceScore * 0.03 +
+        edgePenalty;
 
       if (score < bestScore) {
         best = candidate;
@@ -1291,26 +1536,26 @@
       if (deltaX >= 0) {
         return [
           { x: sourceRect.x + sourceRect.width, y: sourceCenter.y },
-          { x: targetRect.x, y: targetCenter.y }
+          { x: targetRect.x, y: targetCenter.y },
         ];
       }
 
       return [
         { x: sourceRect.x, y: sourceCenter.y },
-        { x: targetRect.x + targetRect.width, y: targetCenter.y }
+        { x: targetRect.x + targetRect.width, y: targetCenter.y },
       ];
     }
 
     if (deltaY >= 0) {
       return [
         { x: sourceCenter.x, y: sourceRect.y + sourceRect.height },
-        { x: targetCenter.x, y: targetRect.y }
+        { x: targetCenter.x, y: targetRect.y },
       ];
     }
 
     return [
       { x: sourceCenter.x, y: sourceRect.y },
-      { x: targetCenter.x, y: targetRect.y + targetRect.height }
+      { x: targetCenter.x, y: targetRect.y + targetRect.height },
     ];
   }
 
@@ -1321,11 +1566,15 @@
     const controlDistanceY = Math.max(26, Math.abs(dy) * 0.35);
     const control1 = {
       x: sourceAnchor.x + Math.sign(dx || 1) * controlDistanceX,
-      y: sourceAnchor.y + Math.sign(dy || 1) * Math.min(18, controlDistanceY * 0.2)
+      y:
+        sourceAnchor.y +
+        Math.sign(dy || 1) * Math.min(18, controlDistanceY * 0.2),
     };
     const control2 = {
       x: targetAnchor.x - Math.sign(dx || 1) * controlDistanceX,
-      y: targetAnchor.y - Math.sign(dy || 1) * Math.min(18, controlDistanceY * 0.2)
+      y:
+        targetAnchor.y -
+        Math.sign(dy || 1) * Math.min(18, controlDistanceY * 0.2),
     };
 
     context.beginPath();
@@ -1336,7 +1585,7 @@
       control2.x,
       control2.y,
       targetAnchor.x,
-      targetAnchor.y
+      targetAnchor.y,
     );
     context.stroke();
   }
@@ -1363,7 +1612,14 @@
     }
 
     for (let index = 1; index < annotation.points.length; index += 1) {
-      if (distanceToSegment(point, annotation.points[index - 1], annotation.points[index]) <= STROKE_WIDTH + 6) {
+      if (
+        distanceToSegment(
+          point,
+          annotation.points[index - 1],
+          annotation.points[index],
+        ) <=
+        STROKE_WIDTH + 6
+      ) {
         return true;
       }
     }
@@ -1376,16 +1632,30 @@
     return isPointInPolygon(point, polygon);
   }
 
-  function translateAnnotationWithinBounds(annotation, dx, dy, canvasWidth, canvasHeight) {
+  function translateAnnotationWithinBounds(
+    annotation,
+    dx,
+    dy,
+    canvasWidth,
+    canvasHeight,
+  ) {
     const bounds = getAnnotationBounds(annotation);
-    const clampedDx = clamp(dx, -bounds.x, canvasWidth - (bounds.x + bounds.width));
-    const clampedDy = clamp(dy, -bounds.y, canvasHeight - (bounds.y + bounds.height));
+    const clampedDx = clamp(
+      dx,
+      -bounds.x,
+      canvasWidth - (bounds.x + bounds.width),
+    );
+    const clampedDy = clamp(
+      dy,
+      -bounds.y,
+      canvasHeight - (bounds.y + bounds.height),
+    );
 
     if (annotation.type === "rect" || annotation.type === "text") {
       return {
         ...annotation,
         x: annotation.x + clampedDx,
-        y: annotation.y + clampedDy
+        y: annotation.y + clampedDy,
       };
     }
 
@@ -1393,7 +1663,7 @@
       return {
         ...annotation,
         start: translatePoint(annotation.start, clampedDx, clampedDy),
-        end: translatePoint(annotation.end, clampedDx, clampedDy)
+        end: translatePoint(annotation.end, clampedDx, clampedDy),
       };
     }
 
@@ -1406,7 +1676,7 @@
         x: annotation.x,
         y: annotation.y,
         width: annotation.width,
-        height: annotation.height
+        height: annotation.height,
       };
     }
 
@@ -1440,20 +1710,21 @@
         x: bounds.x - STROKE_WIDTH,
         y: bounds.y - STROKE_WIDTH,
         width: bounds.width + STROKE_WIDTH * 2,
-        height: bounds.height + STROKE_WIDTH * 2
-      }
+        height: bounds.height + STROKE_WIDTH * 2,
+      },
     };
   }
 
   function measureTextBlock(context, lines) {
     context.save();
     context.font = `600 ${FONT_SIZE}px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
-    const width = Math.max(...lines.map((line) => context.measureText(line).width), 0) + 8;
+    const width =
+      Math.max(...lines.map((line) => context.measureText(line).width), 0) + 8;
     context.restore();
 
     return {
       width,
-      height: Math.max(1, lines.length) * Math.round(FONT_SIZE * 1.35)
+      height: Math.max(1, lines.length) * Math.round(FONT_SIZE * 1.35),
     };
   }
 
@@ -1466,14 +1737,18 @@
   }
 
   function replaceAnnotation(annotations, replacement) {
-    const index = annotations.findIndex((annotation) => annotation.id === replacement.id);
+    const index = annotations.findIndex(
+      (annotation) => annotation.id === replacement.id,
+    );
     if (index >= 0) {
       annotations.splice(index, 1, replacement);
     }
   }
 
   function bringAnnotationToFront(annotations, annotationId) {
-    const index = annotations.findIndex((annotation) => annotation.id === annotationId);
+    const index = annotations.findIndex(
+      (annotation) => annotation.id === annotationId,
+    );
     if (index >= 0 && index !== annotations.length - 1) {
       const [annotation] = annotations.splice(index, 1);
       annotations.push(annotation);
@@ -1493,14 +1768,14 @@
       x: Math.min(start.x, end.x),
       y: Math.min(start.y, end.y),
       width: Math.abs(end.x - start.x),
-      height: Math.abs(end.y - start.y)
+      height: Math.abs(end.y - start.y),
     };
   }
 
   function translatePoint(point, dx, dy) {
     return {
       x: point.x + dx,
-      y: point.y + dy
+      y: point.y + dy,
     };
   }
 
@@ -1509,14 +1784,14 @@
       x: rect.x + dx,
       y: rect.y + dy,
       width: rect.width,
-      height: rect.height
+      height: rect.height,
     };
   }
 
   function rectCenter(rect) {
     return {
       x: rect.x + rect.width / 2,
-      y: rect.y + rect.height / 2
+      y: rect.y + rect.height / 2,
     };
   }
 
@@ -1529,7 +1804,7 @@
       x,
       y,
       width: right - x,
-      height: bottom - y
+      height: bottom - y,
     };
   }
 
@@ -1544,15 +1819,17 @@
       x: minX,
       y: minY,
       width: maxX - minX,
-      height: maxY - minY
+      height: maxY - minY,
     };
   }
 
   function isPointInExpandedRect(point, rect, padding) {
-    return point.x >= rect.x - padding
-      && point.x <= rect.x + rect.width + padding
-      && point.y >= rect.y - padding
-      && point.y <= rect.y + rect.height + padding;
+    return (
+      point.x >= rect.x - padding &&
+      point.x <= rect.x + rect.width + padding &&
+      point.y >= rect.y - padding &&
+      point.y <= rect.y + rect.height + padding
+    );
   }
 
   function isPointInPolygon(point, polygon) {
@@ -1564,8 +1841,9 @@
       const xj = polygon[j].x;
       const yj = polygon[j].y;
 
-      const intersect = ((yi > point.y) !== (yj > point.y))
-        && (point.x < ((xj - xi) * (point.y - yi)) / ((yj - yi) || 1e-6) + xi);
+      const intersect =
+        yi > point.y !== yj > point.y &&
+        point.x < ((xj - xi) * (point.y - yi)) / (yj - yi || 1e-6) + xi;
 
       if (intersect) {
         inside = !inside;
@@ -1581,12 +1859,13 @@
       return distanceBetween(point, a);
     }
 
-    let t = ((point.x - a.x) * (b.x - a.x) + (point.y - a.y) * (b.y - a.y)) / l2;
+    let t =
+      ((point.x - a.x) * (b.x - a.x) + (point.y - a.y) * (b.y - a.y)) / l2;
     t = clamp(t, 0, 1);
 
     return distanceBetween(point, {
       x: a.x + t * (b.x - a.x),
-      y: a.y + t * (b.y - a.y)
+      y: a.y + t * (b.y - a.y),
     });
   }
 
@@ -1595,8 +1874,14 @@
   }
 
   function rectIntersectionArea(a, b) {
-    const width = Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x));
-    const height = Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y));
+    const width = Math.max(
+      0,
+      Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x),
+    );
+    const height = Math.max(
+      0,
+      Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y),
+    );
     return width * height;
   }
 
