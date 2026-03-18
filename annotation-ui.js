@@ -1198,7 +1198,8 @@
         this.commitTextInput();
         this.renderScene();
 
-        const imageDataUrl = this.baseCanvas.toDataURL("image/png");
+        const imageBlob = await canvasToBlob(this.baseCanvas);
+        const imageDataUrl = await blobToDataUrl(imageBlob);
         const response = await chrome.runtime.sendMessage({
           type: "copy-image-to-clipboard",
           imageDataUrl,
@@ -1921,6 +1922,28 @@
     canvas.height = sourceCanvas.height;
     canvas.getContext("2d").drawImage(sourceCanvas, 0, 0);
     return canvas;
+  }
+
+  function canvasToBlob(canvas) {
+    return new Promise((resolve, reject) => {
+      canvas.toBlob((blob) => {
+        if (!blob) {
+          reject(new Error("无法生成标注图片。"));
+          return;
+        }
+
+        resolve(blob);
+      }, "image/png");
+    });
+  }
+
+  function blobToDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error("无法读取标注图片。"));
+      reader.readAsDataURL(blob);
+    });
   }
 
   function loadImage(src) {
